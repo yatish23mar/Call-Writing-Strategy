@@ -22,8 +22,8 @@ jobs:
       - name: Install Quant Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance requests py_vollib
-          pip install https://github.com/twopirllc/pandas-ta/archive/master.zip
+          # Replaced the broken twopirllc GitHub link with the official community PyPI fork
+          pip install pandas numpy yfinance requests py_vollib pandas-ta-classic
 
       - name: Execute Screener and Send Alert
         env:
