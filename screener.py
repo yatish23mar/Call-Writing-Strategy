@@ -2,7 +2,7 @@ import time
 import math
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
+import pandas_ta_classic as ta
 import yfinance as yf
 from datetime import datetime, timedelta
 import requests
@@ -75,7 +75,7 @@ def fetch_universe_stateless(tickers):
         raise Exception("Failed to fetch historical data for the F&O universe.")
         
     master_df = pd.concat(all_data, ignore_index=True)
-    master_df.columns = master_df.columns.str.lower() # Ensure uniformity
+    master_df.columns = master_df.columns.str.lower()
     return master_df
 
 # ==========================================
