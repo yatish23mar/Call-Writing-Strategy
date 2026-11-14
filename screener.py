@@ -13,7 +13,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# Updated imports to resolve the DeprecationWarning
 from vollib.black_scholes.greeks.analytical import delta
 from vollib.black_scholes.implied_volatility import implied_volatility
 
@@ -150,21 +149,26 @@ def compute_stateless_indicators(group):
 
 def execute_screener(df, earnings_calendar):
     latest_date = df['date'].max()
-    today = df[df['date'] == latest_date].copy()
+    # Fill NaN with 0 so display formatting doesn't crash on newly listed stocks
+    today = df[df['date'] == latest_date].copy().fillna(0)
     
     c_stretch = (today['RSI'] >= 80) & (today['close'] > today['BB_Upper_2.5'])
     c_momentum = today['MACD_Hist'] < 0
     c_regime = (today['ADX'] > 35) & (today['ADX_Slope'] < 0)
     c_rejection = today['Upper_Wick_Ratio'] >= 0.50
     c_premium = today['HVP'] >= 80
-    c_liquidity = today['Turnover_Cr'] > 500
+    c_liquidity = today['Turnover_Cr'] > 200 # Liquidity lowered to 200 Cr per management rule
     
     ten_days_out = datetime.now() + timedelta(days=10)
     allowed_tickers = [t for t in today['ticker'] if earnings_calendar.get(t, datetime.max) > ten_days_out]
     c_no_earnings = today['ticker'].isin(allowed_tickers)
     
-    survivors = today[c_stretch & c_momentum & c_regime & c_rejection & c_premium & c_liquidity & c_no_earnings]
-    return survivors
+    qualifies = c_stretch & c_momentum & c_regime & c_rejection & c_premium & c_liquidity & c_no_earnings
+    today['Status'] = np.where(qualifies, 'QUALIFIED', 'FAILED')
+    
+    # Sort: Qualified on top, then sort the rest by HVP (Descending)
+    today = today.sort_values(by=['Status', 'HVP'], ascending=[False, False])
+    return today
 
 def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
     calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['INSTRUMENT'] == 'OPTSTK') & (fo_df['OPTION_TYP'] == 'CE')].copy()
@@ -210,22 +214,47 @@ def send_email_alert(html_table):
     recipient = os.environ.get("RECIPIENT_EMAIL")
     
     msg = MIMEMultipart()
-    msg['Subject'] = f"QUANT ALERT: Short Call Candidates - {datetime.now().strftime('%d-%b-%Y')}"
+    msg['Subject'] = f"QUANTITATIVE EOD MATRIX: Naked Short Universe - {datetime.now().strftime('%d-%b-%Y')}"
     msg['From'] = sender
     msg['To'] = recipient
     
     body = f"""
-    <html><body>
-    <h3 style="color:#d9534f;">Actionable Naked Short Signals</h3>
-    <p>Execution Rule: Abort trade manually if 9:08 AM pre-market settlement breaches the Spot Abort Level.</p>
-    <table border="1" cellpadding="8" style="border-collapse: collapse; font-family: Arial;">
-      <tr style="background-color: #f2f2f2;">
-        <th>Ticker</th><th>Spot Close</th><th>HVP</th><th>Target Strike (15 D)</th><th>Premium</th><th>Hard Stop (200%)</th>
+    <html>
+    <head>
+    <style>
+      table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; }}
+      th, td {{ border: 1px solid #ddd; padding: 6px; text-align: right; }}
+      th {{ background-color: #0b1c3c; color: white; text-align: center; }}
+      td:first-child {{ text-align: left; font-weight: bold; }}
+      .qualified {{ background-color: #d4edda; }}
+      .failed {{ background-color: #ffffff; color: #555; }}
+    </style>
+    </head>
+    <body>
+    <h2 style="color:#0b1c3c;">Systematic F&O Exhaustion Matrix</h2>
+    <p>Displays all mathematically processed F&O constituents. Sorted by Signal Status, then HVP. <br>
+    <b>Rule:</b> Only execute 'QUALIFIED' tickers. Abort if 9:08 AM pre-market breaches Spot Close.</p>
+    
+    <table>
+      <tr>
+        <th>Ticker</th>
+        <th>Spot Close</th>
+        <th>RSI (14)</th>
+        <th>MACD Hist</th>
+        <th>ADX</th>
+        <th>Wick %</th>
+        <th>HVP (252)</th>
+        <th>Liq (Cr)</th>
+        <th>Target (15D)</th>
+        <th>Premium</th>
+        <th>Hard Stop</th>
+        <th>Signal Status</th>
       </tr>
       {html_table}
     </table>
-    </body></html>
-    """ if html_table else "<html><body><h3>No exhaustion signals met the strict institutional criteria today.</h3></body></html>"
+    </body>
+    </html>
+    """
     
     msg.attach(MIMEText(body, 'html'))
     
@@ -250,31 +279,55 @@ if __name__ == "__main__":
     raw_data = fetch_universe_stateless(fno_universe)
     
     print("--- Running Screener ---")
-    # Pandas 3.1.1 bypass: Manually loop and concatenate to prevent dropping the ticker column
     processed_list = []
     for ticker_name, group_df in raw_data.groupby('ticker'):
         processed_list.append(compute_stateless_indicators(group_df.copy()))
     processed = pd.concat(processed_list, ignore_index=True)
     
-    signals = execute_screener(processed, {})
+    # execution returns ALL evaluated stocks, with a 'Status' column attached
+    full_market_matrix = execute_screener(processed, {})
     
     html_rows = ""
-    if not signals.empty:
-        for idx, row in signals.iterrows():
-            if fo_bhavcopy is not None:
-                opt = get_15_delta_from_bhavcopy(fo_bhavcopy, row['ticker'], row['close'])
-                if opt:
-                    strike = opt['target_strike']
-                    prem = opt['expected_premium']
-                    stop = prem * 3
-                    html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>{strike} CE</b></td><td>₹{prem:.2f}</td><td style='color:red;'><b>₹{stop:.2f}</b></td></tr>"
-                    print(f"Signal: {row['ticker']} | {strike} CE")
-                    continue
-                    
-            html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>Manual Pull</b></td><td>N/A</td><td style='color:red;'>N/A</td></tr>"
-            print(f"Signal: {row['ticker']} | Technicals Hit, Check Strikes Manually")
-    else:
-        print("No signals generated today.")
+    print("--- Calculating Greeks & Building Matrix ---")
+    
+    for idx, row in full_market_matrix.iterrows():
+        strike_str = "N/A"
+        prem_str = "N/A"
+        stop_str = "N/A"
         
-    print("--- Dispatching Email ---")
+        # We calculate options chain metrics for ALL stocks if data is available
+        if fo_bhavcopy is not None:
+            opt = get_15_delta_from_bhavcopy(fo_bhavcopy, row['ticker'], row['close'])
+            if opt:
+                strike_str = f"{opt['target_strike']} CE"
+                prem_str = f"₹{opt['expected_premium']:.2f}"
+                stop_str = f"₹{opt['expected_premium'] * 3:.2f}"
+            else:
+                strike_str = "Illiquid Chain"
+        elif row['Status'] == 'QUALIFIED':
+            strike_str = "Manual Pull Required"
+            
+        # Row coloring based on qualification status
+        row_class = "qualified" if row['Status'] == 'QUALIFIED' else "failed"
+        status_color = "green" if row['Status'] == 'QUALIFIED' else "red"
+        
+        html_rows += f"""
+        <tr class="{row_class}">
+            <td>{row['ticker']}</td>
+            <td>₹{row['close']:.2f}</td>
+            <td>{row['RSI']:.1f}</td>
+            <td>{row['MACD_Hist']:.2f}</td>
+            <td>{row['ADX']:.1f}</td>
+            <td>{row['Upper_Wick_Ratio']:.2f}</td>
+            <td>{row['HVP']:.1f}</td>
+            <td>₹{row['Turnover_Cr']:.1f}</td>
+            <td style="font-weight:bold;">{strike_str}</td>
+            <td>{prem_str}</td>
+            <td style="color:red; font-weight:bold;">{stop_str}</td>
+            <td style="color:{status_color}; font-weight:bold;">{row['Status']}</td>
+        </tr>
+        """
+        
+    print("--- Dispatching Executive Report ---")
     send_email_alert(html_rows)
+    print("Complete.")
