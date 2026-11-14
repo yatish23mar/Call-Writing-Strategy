@@ -16,12 +16,41 @@ from py_vollib.black_scholes.greeks.analytical import delta
 from py_vollib.black_scholes.implied_volatility import implied_volatility
 
 # ==========================================
-# 1. NSE DATA EXTRACTION
+# 1. FAIL-SAFE F&O UNIVERSE
+# ==========================================
+# Excludes VEDL per corporate action override rules
+FALLBACK_FNO_UNIVERSE = [
+    'AARTIIND', 'ABB', 'ABBOTINDIA', 'ABCAPITAL', 'ABFRL', 'ACC', 'ADANIENT', 'ADANIPORTS', 
+    'ALKEM', 'AMBUJACEM', 'APOLLOHOSP', 'APOLLOTYRE', 'ASHOKLEY', 'ASIANPAINT', 'ASTRAL', 
+    'ATUL', 'AUBANK', 'AUROPHARMA', 'AXISBANK', 'BAJAJ-AUTO', 'BAJAJFINSV', 'BAJFINANCE', 
+    'BALRAMCHIN', 'BANDHANBNK', 'BANKBARODA', 'BATAINDIA', 'BEL', 'BERGEPAINT', 'BHARATFORG', 
+    'BHARTIARTL', 'BHEL', 'BIOCON', 'BOSCHLTD', 'BPCL', 'BRITANNIA', 'CANBK', 'CANFINHOME', 
+    'CHAMBLFERT', 'CHOLAFIN', 'CIPLA', 'COALINDIA', 'COFORGE', 'COLPAL', 'CONCOR', 'COROMANDEL', 
+    'CROMPTON', 'CUB', 'CUMMINSIND', 'DABUR', 'DALBHARAT', 'DEEPAKNTR', 'DIVISLAB', 'DIXON', 
+    'DLF', 'DRREDDY', 'EICHERMOT', 'ESCORTS', 'EXIDEIND', 'FEDERALBNK', 'GAIL', 'GLENMARK', 
+    'GMRINFRA', 'GNFC', 'GODREJCP', 'GODREJPROP', 'GRANULES', 'GRASIM', 'GUJGASLTD', 'HAL', 
+    'HAVELLS', 'HCLTECH', 'HDFCAMC', 'HDFCBANK', 'HDFCLIFE', 'HEROMOTOCO', 'HINDALCO', 'HINDCOPPER', 
+    'HINDPETRO', 'HINDUNILVR', 'ICICIBANK', 'ICICIGI', 'ICICIPRULI', 'IDEA', 'IDFCFIRSTB', 
+    'IEX', 'IGL', 'INDHOTEL', 'INDIACEM', 'INDIAMART', 'INDIGO', 'INDUSINDBK', 'INDUSTOWER', 
+    'INFY', 'IOC', 'IPCALAB', 'IRCTC', 'ITC', 'JINDALSTEL', 'JKCEMENT', 'JSWSTEEL', 'JUBLFOOD', 
+    'KOTAKBANK', 'LALPATHLAB', 'LAURUSLABS', 'LICHSGFIN', 'LT', 'LTIM', 'LTTS', 'LUPIN', 
+    'M&M', 'M&MFIN', 'MANAPPURAM', 'MARICO', 'MARUTI', 'MCX', 'METROPOLIS', 'MFSL', 'MGL', 
+    'MOTHERSON', 'MPHASIS', 'MRF', 'MUTHOOTFIN', 'NATIONALUM', 'NAUKRI', 'NAVINFLUOR', 'NESTLEIND', 
+    'NMDC', 'NTPC', 'OBEROIRLTY', 'OFSS', 'ONGC', 'PAGEIND', 'PEL', 'PERSISTENT', 'PETRONET', 
+    'PFC', 'PIDILITIND', 'PIIND', 'PNB', 'POLYCAB', 'POWERGRID', 'PVRINOX', 'RAMCOCEM', 
+    'RBLBANK', 'RECLTD', 'RELIANCE', 'SAIL', 'SBICARD', 'SBILIFE', 'SBIN', 'SHREECEM', 
+    'SIEMENS', 'SRF', 'SUNTV', 'SUNPHARMA', 'SYNGENE', 'TATACHEM', 'TATACOMM', 'TATACONSUM', 
+    'TATAMOTORS', 'TATAPOWER', 'TATASTEEL', 'TCS', 'TECHM', 'TITAN', 'TORNTPHARM', 'TRENT', 
+    'TVSMOTOR', 'UBL', 'ULTRACEMCO', 'UPL', 'VOLTAS', 'WIPRO', 'ZEEL', 'ZYDUSLIFE'
+]
+
+# ==========================================
+# 2. NSE DATA EXTRACTION
 # ==========================================
 def fetch_today_fno_bhavcopy():
     target_date = datetime.now()
     
-    # If today is Saturday (5) or Sunday (6), roll back to Friday
+    # Rollback to Friday if running on a weekend
     if target_date.weekday() == 5:
         target_date -= timedelta(days=1)
     elif target_date.weekday() == 6:
@@ -33,35 +62,43 @@ def fetch_today_fno_bhavcopy():
     
     url = f"https://nsearchives.nseindia.com/content/historical/DERIVATIVES/{year_str}/{month_str}/fo{date_str}bhav.csv.zip"
     
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    session = requests.Session()
-    session.get("https://www.nseindia.com", headers=headers, timeout=10)
-    response = session.get(url, headers=headers, timeout=10)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
     
-    if response.status_code != 200:
+    try:
+        # Bypassing the NSE frontend cookie warmup avoids strict WAF drops
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                csv_filename = z.namelist()[0]
+                with z.open(csv_filename) as f:
+                    fo_df = pd.read_csv(f)
+            fo_df.columns = fo_df.columns.str.strip()
+            return fo_df
         return None
-        
-    with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-        csv_filename = z.namelist()[0]
-        with z.open(csv_filename) as f:
-            fo_df = pd.read_csv(f)
-    fo_df.columns = fo_df.columns.str.strip()
-    return fo_df
+    except Exception as e:
+        print(f"Bhavcopy Download Error: {e}")
+        return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
     fut_stk = fo_bhavcopy_df[fo_bhavcopy_df['INSTRUMENT'] == 'FUTSTK']
     active_symbols = fut_stk['SYMBOL'].unique().tolist()
+    
+    if 'VEDL' in active_symbols:
+        active_symbols.remove('VEDL')
+        
     print(f"Extracted {len(active_symbols)} active F&O stocks.")
     return active_symbols
 
 # ==========================================
-# 2. STATELESS SPOT DATA (Yahoo Finance)
+# 3. STATELESS SPOT DATA (Yahoo Finance)
 # ==========================================
 def fetch_universe_stateless(tickers):
-    print(f"Fetching 1-year history for {len(tickers)} active F&O stocks...")
+    print(f"Fetching 1-year history for {len(tickers)} F&O stocks...")
     yf_tickers = [f"{t}.NS" for t in tickers]
     
-    # Threads=True ensures bulk downloading in seconds without hanging
     data = yf.download(yf_tickers, period="1y", interval="1d", group_by='ticker', threads=True)
     
     all_data = []
@@ -71,7 +108,6 @@ def fetch_universe_stateless(tickers):
             if df.empty:
                 continue
             df = df.dropna(subset=['Close']).reset_index()
-            # Standardize columns for the quantitative engine
             df = df.rename(columns={
                 'Date': 'date', 'Open': 'open', 'High': 'high', 
                 'Low': 'low', 'Close': 'close', 'Volume': 'volume'
@@ -79,15 +115,12 @@ def fetch_universe_stateless(tickers):
             df['ticker'] = orig_ticker
             all_data.append(df)
             
-    if not all_data:
-        raise Exception("Failed to fetch historical data for the F&O universe.")
-        
     master_df = pd.concat(all_data, ignore_index=True)
     master_df.columns = master_df.columns.str.lower()
     return master_df
 
 # ==========================================
-# 3. QUANTITATIVE ENGINE
+# 4. QUANTITATIVE ENGINE
 # ==========================================
 def compute_stateless_indicators(group):
     group['RSI'] = ta.rsi(group['close'], length=14)
@@ -170,7 +203,7 @@ def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
     }
 
 # ==========================================
-# 4. EMAIL ALERT SYSTEM
+# 5. EMAIL ALERT SYSTEM
 # ==========================================
 def send_email_alert(html_table):
     sender = os.environ.get("SENDER_EMAIL")
@@ -208,12 +241,13 @@ if __name__ == "__main__":
     print("--- Fetching NSE Options Chain ---")
     fo_bhavcopy = fetch_today_fno_bhavcopy()
     
-    if fo_bhavcopy is None:
-        print("NSE Bhavcopy not published yet. Exiting.")
-        exit()
+    # 1. Fallback Logic Injection
+    if fo_bhavcopy is not None:
+        fno_universe = extract_active_fno_universe(fo_bhavcopy)
+    else:
+        print("NSE Options Data Blocked or Unavailable. Activating Fallback F&O Universe.")
+        fno_universe = FALLBACK_FNO_UNIVERSE
         
-    fno_universe = extract_active_fno_universe(fo_bhavcopy)
-    
     print("--- Fetching Yahoo Finance History ---")
     raw_data = fetch_universe_stateless(fno_universe)
     
@@ -221,16 +255,23 @@ if __name__ == "__main__":
     processed = raw_data.groupby('ticker', group_keys=False).apply(compute_stateless_indicators)
     signals = execute_screener(processed, {})
     
+    # 2. Output Formatting
     html_rows = ""
     if not signals.empty:
         for idx, row in signals.iterrows():
-            opt = get_15_delta_from_bhavcopy(fo_bhavcopy, row['ticker'], row['close'])
-            if opt:
-                strike = opt['target_strike']
-                prem = opt['expected_premium']
-                stop = prem * 3
-                html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>{strike} CE</b></td><td>₹{prem:.2f}</td><td style='color:red;'><b>₹{stop:.2f}</b></td></tr>"
-                print(f"Signal: {row['ticker']} | {strike} CE")
+            if fo_bhavcopy is not None:
+                opt = get_15_delta_from_bhavcopy(fo_bhavcopy, row['ticker'], row['close'])
+                if opt:
+                    strike = opt['target_strike']
+                    prem = opt['expected_premium']
+                    stop = prem * 3
+                    html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>{strike} CE</b></td><td>₹{prem:.2f}</td><td style='color:red;'><b>₹{stop:.2f}</b></td></tr>"
+                    print(f"Signal: {row['ticker']} | {strike} CE")
+                    continue
+                    
+            # Triggers if a signal is found but options prices were blocked
+            html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>Manual Pull</b></td><td>N/A</td><td style='color:red;'>N/A</td></tr>"
+            print(f"Signal: {row['ticker']} | Technicals Hit, Check Strikes Manually")
     else:
         print("No signals generated today.")
         
