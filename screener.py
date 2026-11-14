@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
-from tvDatafeed import TvDatafeed, Interval
+import yfinance as yf
 from datetime import datetime, timedelta
 import requests
 import zipfile
@@ -47,23 +47,35 @@ def extract_active_fno_universe(fo_bhavcopy_df):
     return active_symbols
 
 # ==========================================
-# 2. STATELESS SPOT DATA (TradingView)
+# 2. STATELESS SPOT DATA (Yahoo Finance)
 # ==========================================
 def fetch_universe_stateless(tickers):
-    tv = TvDatafeed()
+    print(f"Fetching 1-year history for {len(tickers)} active F&O stocks...")
+    yf_tickers = [f"{t}.NS" for t in tickers]
+    
+    # Threads=True ensures bulk downloading in seconds without hanging
+    data = yf.download(yf_tickers, period="1y", interval="1d", group_by='ticker', threads=True)
+    
     all_data = []
-    for ticker in tickers:
-        try:
-            df = tv.get_hist(symbol=ticker, exchange='NSE', interval=Interval.in_daily, n_bars=300)
-            if df is not None and not df.empty:
-                df = df.reset_index()
-                df['ticker'] = ticker
-                all_data.append(df)
-            time.sleep(0.2)
-        except Exception:
-            continue
+    for orig_ticker, yf_ticker in zip(tickers, yf_tickers):
+        if yf_ticker in data:
+            df = data[yf_ticker].copy()
+            if df.empty:
+                continue
+            df = df.dropna(subset=['Close']).reset_index()
+            # Standardize columns for the quantitative engine
+            df = df.rename(columns={
+                'Date': 'date', 'Open': 'open', 'High': 'high', 
+                'Low': 'low', 'Close': 'close', 'Volume': 'volume'
+            })
+            df['ticker'] = orig_ticker
+            all_data.append(df)
+            
+    if not all_data:
+        raise Exception("Failed to fetch historical data for the F&O universe.")
+        
     master_df = pd.concat(all_data, ignore_index=True)
-    master_df.rename(columns={'datetime': 'date'}, inplace=True)
+    master_df.columns = master_df.columns.str.lower() # Ensure uniformity
     return master_df
 
 # ==========================================
@@ -194,7 +206,7 @@ if __name__ == "__main__":
         
     fno_universe = extract_active_fno_universe(fo_bhavcopy)
     
-    print("--- Fetching TradingView History ---")
+    print("--- Fetching Yahoo Finance History ---")
     raw_data = fetch_universe_stateless(fno_universe)
     
     print("--- Running Screener ---")
