@@ -23,8 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance requests py_vollib
-          # Direct zip download bypasses GitHub Actions git credential blocking
-          pip install https://github.com/twopirllc/pandas-ta/archive/main.zip
+          pip install https://github.com/twopirllc/pandas-ta/archive/master.zip
 
       - name: Execute Screener and Send Alert
         env:
