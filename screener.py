@@ -19,10 +19,18 @@ from py_vollib.black_scholes.implied_volatility import implied_volatility
 # 1. NSE DATA EXTRACTION
 # ==========================================
 def fetch_today_fno_bhavcopy():
-    today = datetime.now()
-    month_str = today.strftime('%b').upper()
-    year_str = today.strftime('%Y')
-    date_str = today.strftime('%d%b%Y').upper()
+    target_date = datetime.now()
+    
+    # If today is Saturday (5) or Sunday (6), roll back to Friday
+    if target_date.weekday() == 5:
+        target_date -= timedelta(days=1)
+    elif target_date.weekday() == 6:
+        target_date -= timedelta(days=2)
+        
+    month_str = target_date.strftime('%b').upper()
+    year_str = target_date.strftime('%Y')
+    date_str = target_date.strftime('%d%b%Y').upper()
+    
     url = f"https://nsearchives.nseindia.com/content/historical/DERIVATIVES/{year_str}/{month_str}/fo{date_str}bhav.csv.zip"
     
     headers = {'User-Agent': 'Mozilla/5.0'}
