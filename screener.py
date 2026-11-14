@@ -12,13 +12,14 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from py_vollib.black_scholes.greeks.analytical import delta
-from py_vollib.black_scholes.implied_volatility import implied_volatility
+
+# Updated imports to resolve the DeprecationWarning
+from vollib.black_scholes.greeks.analytical import delta
+from vollib.black_scholes.implied_volatility import implied_volatility
 
 # ==========================================
 # 1. FAIL-SAFE F&O UNIVERSE
 # ==========================================
-# Excludes VEDL per corporate action override rules
 FALLBACK_FNO_UNIVERSE = [
     'AARTIIND', 'ABB', 'ABBOTINDIA', 'ABCAPITAL', 'ABFRL', 'ACC', 'ADANIENT', 'ADANIPORTS', 
     'ALKEM', 'AMBUJACEM', 'APOLLOHOSP', 'APOLLOTYRE', 'ASHOKLEY', 'ASIANPAINT', 'ASTRAL', 
@@ -50,7 +51,6 @@ FALLBACK_FNO_UNIVERSE = [
 def fetch_today_fno_bhavcopy():
     target_date = datetime.now()
     
-    # Rollback to Friday if running on a weekend
     if target_date.weekday() == 5:
         target_date -= timedelta(days=1)
     elif target_date.weekday() == 6:
@@ -68,7 +68,6 @@ def fetch_today_fno_bhavcopy():
     }
     
     try:
-        # Bypassing the NSE frontend cookie warmup avoids strict WAF drops
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
@@ -241,7 +240,6 @@ if __name__ == "__main__":
     print("--- Fetching NSE Options Chain ---")
     fo_bhavcopy = fetch_today_fno_bhavcopy()
     
-    # 1. Fallback Logic Injection
     if fo_bhavcopy is not None:
         fno_universe = extract_active_fno_universe(fo_bhavcopy)
     else:
@@ -252,10 +250,14 @@ if __name__ == "__main__":
     raw_data = fetch_universe_stateless(fno_universe)
     
     print("--- Running Screener ---")
-    processed = raw_data.groupby('ticker', group_keys=False).apply(compute_stateless_indicators)
+    # Pandas 3.1.1 bypass: Manually loop and concatenate to prevent dropping the ticker column
+    processed_list = []
+    for ticker_name, group_df in raw_data.groupby('ticker'):
+        processed_list.append(compute_stateless_indicators(group_df.copy()))
+    processed = pd.concat(processed_list, ignore_index=True)
+    
     signals = execute_screener(processed, {})
     
-    # 2. Output Formatting
     html_rows = ""
     if not signals.empty:
         for idx, row in signals.iterrows():
@@ -269,7 +271,6 @@ if __name__ == "__main__":
                     print(f"Signal: {row['ticker']} | {strike} CE")
                     continue
                     
-            # Triggers if a signal is found but options prices were blocked
             html_rows += f"<tr><td><b>{row['ticker']}</b></td><td>₹{row['close']:.2f}</td><td>{row['HVP']:.1f}</td><td><b>Manual Pull</b></td><td>N/A</td><td style='color:red;'>N/A</td></tr>"
             print(f"Signal: {row['ticker']} | Technicals Hit, Check Strikes Manually")
     else:
