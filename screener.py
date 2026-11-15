@@ -5,7 +5,7 @@ import pandas as pd
 import pandas_ta_classic as ta
 import yfinance as yf
 from datetime import datetime, timedelta
-import requests
+from curl_cffi import requests
 import zipfile
 import io
 import os
@@ -45,7 +45,7 @@ FALLBACK_FNO_UNIVERSE = [
 ]
 
 # ==========================================
-# 2. NSE DATA EXTRACTION
+# 2. NSE DATA EXTRACTION (curl-cffi Impersonation)
 # ==========================================
 def fetch_today_fno_bhavcopy():
     target_date = datetime.now()
@@ -61,13 +61,11 @@ def fetch_today_fno_bhavcopy():
     
     url = f"https://nsearchives.nseindia.com/content/historical/DERIVATIVES/{year_str}/{month_str}/fo{date_str}bhav.csv.zip"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-    }
-    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        session = requests.Session(impersonate="chrome")
+        session.get("https://www.nseindia.com", timeout=15)
+        response = session.get(url, timeout=15)
+        
         if response.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
                 csv_filename = z.namelist()[0]
@@ -91,13 +89,13 @@ def extract_active_fno_universe(fo_bhavcopy_df):
     return active_symbols
 
 # ==========================================
-# 3. STATELESS SPOT DATA (Yahoo Finance)
+# 3. STATELESS SPOT DATA (Yahoo Finance - 2 Year Fix)
 # ==========================================
 def fetch_universe_stateless(tickers):
-    print(f"Fetching 1-year history for {len(tickers)} F&O stocks...")
+    print(f"Fetching 2-year history for {len(tickers)} F&O stocks...")
     yf_tickers = [f"{t}.NS" for t in tickers]
     
-    data = yf.download(yf_tickers, period="1y", interval="1d", group_by='ticker', threads=True)
+    data = yf.download(yf_tickers, period="2y", interval="1d", group_by='ticker', threads=True)
     
     all_data = []
     for orig_ticker, yf_ticker in zip(tickers, yf_tickers):
@@ -149,7 +147,6 @@ def compute_stateless_indicators(group):
 
 def execute_screener(df, earnings_calendar):
     latest_date = df['date'].max()
-    # Fill NaN with 0 so display formatting doesn't crash on newly listed stocks
     today = df[df['date'] == latest_date].copy().fillna(0)
     
     c_stretch = (today['RSI'] >= 80) & (today['close'] > today['BB_Upper_2.5'])
@@ -157,7 +154,7 @@ def execute_screener(df, earnings_calendar):
     c_regime = (today['ADX'] > 35) & (today['ADX_Slope'] < 0)
     c_rejection = today['Upper_Wick_Ratio'] >= 0.50
     c_premium = today['HVP'] >= 80
-    c_liquidity = today['Turnover_Cr'] > 200 # Liquidity lowered to 200 Cr per management rule
+    c_liquidity = today['Turnover_Cr'] > 200
     
     ten_days_out = datetime.now() + timedelta(days=10)
     allowed_tickers = [t for t in today['ticker'] if earnings_calendar.get(t, datetime.max) > ten_days_out]
@@ -166,7 +163,6 @@ def execute_screener(df, earnings_calendar):
     qualifies = c_stretch & c_momentum & c_regime & c_rejection & c_premium & c_liquidity & c_no_earnings
     today['Status'] = np.where(qualifies, 'QUALIFIED', 'FAILED')
     
-    # Sort: Qualified on top, then sort the rest by HVP (Descending)
     today = today.sort_values(by=['Status', 'HVP'], ascending=[False, False])
     return today
 
@@ -284,7 +280,6 @@ if __name__ == "__main__":
         processed_list.append(compute_stateless_indicators(group_df.copy()))
     processed = pd.concat(processed_list, ignore_index=True)
     
-    # execution returns ALL evaluated stocks, with a 'Status' column attached
     full_market_matrix = execute_screener(processed, {})
     
     html_rows = ""
@@ -295,7 +290,6 @@ if __name__ == "__main__":
         prem_str = "N/A"
         stop_str = "N/A"
         
-        # We calculate options chain metrics for ALL stocks if data is available
         if fo_bhavcopy is not None:
             opt = get_15_delta_from_bhavcopy(fo_bhavcopy, row['ticker'], row['close'])
             if opt:
@@ -307,7 +301,6 @@ if __name__ == "__main__":
         elif row['Status'] == 'QUALIFIED':
             strike_str = "Manual Pull Required"
             
-        # Row coloring based on qualification status
         row_class = "qualified" if row['Status'] == 'QUALIFIED' else "failed"
         status_color = "green" if row['Status'] == 'QUALIFIED' else "red"
         
