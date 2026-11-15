@@ -48,7 +48,6 @@ FALLBACK_FNO_UNIVERSE = [
 def fetch_today_fno_bhavcopy():
     check_date = date.today()
     
-    # 5-day lookback loop to elegantly handle weekends and NSE holidays
     for _ in range(5):
         try:
             print(f"Checking F&O Bhavcopy for {check_date}...")
@@ -56,19 +55,18 @@ def fetch_today_fno_bhavcopy():
             bhavcopy = pd.read_csv(file_path)
             bhavcopy.columns = bhavcopy.columns.str.strip()
             
-            # Map new UDiFF architecture back to Legacy column headers
             udiff_map = {
                 "FinInstrmTp": "INSTRUMENT", "TckrSymb": "SYMBOL", "XpryDt": "EXPIRY_DT",
                 "StrkPric": "STRIKE_PR", "OptnTp": "OPTION_TYP", "ClsPric": "CLOSE", "OpnIntrst": "OPEN_INT"
             }
+            # FIXED: Explicit reassignment to avoid Pandas 4 inplace deprecation
             if "TckrSymb" in bhavcopy.columns:
-                bhavcopy.rename(columns=udiff_map, inplace=True)
+                bhavcopy = bhavcopy.rename(columns=udiff_map)
             
             for col in ["INSTRUMENT", "SYMBOL", "OPTION_TYP"]:
                 if col in bhavcopy.columns:
                     bhavcopy[col] = bhavcopy[col].astype(str).str.strip()
             
-            # Typecasting to ensure Black-Scholes module doesn't crash on string math
             bhavcopy["EXPIRY_DT"] = pd.to_datetime(bhavcopy["EXPIRY_DT"], errors='coerce')
             bhavcopy["STRIKE_PR"] = pd.to_numeric(bhavcopy["STRIKE_PR"], errors='coerce')
             bhavcopy["CLOSE"] = pd.to_numeric(bhavcopy["CLOSE"], errors='coerce')
@@ -82,8 +80,11 @@ def fetch_today_fno_bhavcopy():
     return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
-    fut_stk = fo_bhavcopy_df[fo_bhavcopy_df['INSTRUMENT'].isin(['FUTSTK', 'FUT'])]
-    active_symbols = fut_stk['SYMBOL'].unique().tolist()
+    # FIXED: Extracts uniquely directly from SYMBOL rather than relying on unreliable INSTRUMENT strings
+    active_symbols = fo_bhavcopy_df['SYMBOL'].dropna().unique().tolist()
+    
+    indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
+    active_symbols = [s for s in active_symbols if s not in indices and isinstance(s, str)]
     
     if 'VEDL' in active_symbols:
         active_symbols.remove('VEDL')
