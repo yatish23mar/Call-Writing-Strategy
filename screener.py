@@ -15,7 +15,8 @@ from vollib.black_scholes.greeks.analytical import delta
 from vollib.black_scholes.implied_volatility import implied_volatility
 
 # ==========================================
-# 1. FAIL-SAFE F&O UNIVERSE
+# 1. EMERGENCY FALLBACK UNIVERSE
+# Only triggers if the NSE server is offline
 # ==========================================
 FALLBACK_FNO_UNIVERSE = [
     'AARTIIND', 'ABB', 'ABBOTINDIA', 'ABCAPITAL', 'ABFRL', 'ACC', 'ADANIENT', 'ADANIPORTS', 
@@ -39,7 +40,17 @@ FALLBACK_FNO_UNIVERSE = [
     'RBLBANK', 'RECLTD', 'RELIANCE', 'SAIL', 'SBICARD', 'SBILIFE', 'SBIN', 'SHREECEM', 
     'SIEMENS', 'SRF', 'SUNTV', 'SUNPHARMA', 'SYNGENE', 'TATACHEM', 'TATACOMM', 'TATACONSUM', 
     'TATAMOTORS', 'TATAPOWER', 'TATASTEEL', 'TCS', 'TECHM', 'TITAN', 'TORNTPHARM', 'TRENT', 
-    'TVSMOTOR', 'UBL', 'ULTRACEMCO', 'UPL', 'VOLTAS', 'WIPRO', 'ZEEL', 'ZYDUSLIFE'
+    'TVSMOTOR', 'UBL', 'ULTRACEMCO', 'UPL', 'VOLTAS', 'WIPRO', 'ZEEL', 'ZYDUSLIFE',
+    'ANANDRATHI', 'PREMIERENE', 'LODHA', 'RADICO', 'ATHERENERG', 'PRESTIGE', 'TIINDIA', 
+    'SAGILITY', 'AMBER', 'BLUESTARCO', 'BSE', 'CAMS', 'KALYANKJIL', 'KEI', 'MOTILALOFS', 
+    'NYKAA', 'PATANJALI', 'SHRIRAMFIN', 'TMPV', 'UNITDSPR', 'VBL', 'ADANIENSOL', 'ADANIPOWER', 
+    'ANGELONE', 'BAJAJHLDNG', 'ETERNAL', 'GODFRYPHLP', 'IREDA', 'KAYNES', 'KFINTECH', 'MAHABANK', 
+    'NAM-INDIA', 'PAYTM', 'PGEL', 'PNBHOUSING', 'SOLARINDS', 'SUPREMEIND', 'TATAELXSI', 
+    'UJJIVANSFB', 'APLAPOLLO', 'DMART', 'ENRIN', 'FORCEMOT', 'HYUNDAI', 'INOXWIND', 'LICI', 
+    'LTF', 'MANKIND', 'MAXHEALTH', 'NBCC', 'POLICYBZR', 'UNOMINDA', 'VMM', 'ADANIGREEN', 
+    'BDL', 'CDSL', 'CGPOWER', 'COCHINSHIP', 'DELHIVERY', 'GMRAIRPORT', 'IRFC', 'JIOFIN', 
+    'JSWENERGY', 'LTM', 'MAZDOCK', 'OIL', 'PHOENIXLTD', 'POWERINDIA', 'RVNL', 'SONACOMS', 
+    'SUZLON', 'SWIGGY', 'UNIONBANK', 'WAAREEEENER'
 ]
 
 # ==========================================
@@ -79,15 +90,17 @@ def fetch_today_fno_bhavcopy():
     return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
+    # Dynamically extracts all unique tickers from the live file, capturing daily additions/deletions
     active_symbols = fo_bhavcopy_df['SYMBOL'].dropna().unique().tolist()
     
+    # Filter out indices mathematically
     indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
-    active_symbols = [s for s in active_symbols if s not in indices and isinstance(s, str)]
+    active_symbols = [s for s in active_symbols if str(s).upper() not in indices and isinstance(s, str)]
     
     if 'VEDL' in active_symbols:
         active_symbols.remove('VEDL')
         
-    print(f"Extracted {len(active_symbols)} active F&O stocks.")
+    print(f"Dynamically extracted {len(active_symbols)} active F&O stocks from the live NSE file.")
     return active_symbols
 
 # ==========================================
@@ -100,9 +113,9 @@ def fetch_universe_stateless(tickers):
     data = yf.download(yf_tickers, period="2y", interval="1d", group_by='ticker', threads=True)
     
     all_data = []
-    for orig_ticker, yf_tickers in zip(tickers, yf_tickers):
-        if yf_tickers in data:
-            df = data[yf_tickers].copy()
+    for orig_ticker, yf_ticker in zip(tickers, yf_tickers):
+        if yf_ticker in data:
+            df = data[yf_ticker].copy()
             if df.empty:
                 continue
             df = df.dropna(subset=['Close']).reset_index()
@@ -169,7 +182,6 @@ def execute_screener(df, earnings_calendar):
     return today
 
 def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
-    # FIXED: Replaced brittle 'INSTRUMENT' check with universally reliable 'OPTION_TYP' filter
     calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['OPTION_TYP'] == 'CE')].copy()
     if calls.empty: return None
     
@@ -273,10 +285,11 @@ if __name__ == "__main__":
     fo_bhavcopy = fetch_today_fno_bhavcopy()
     
     if fo_bhavcopy is not None:
+        # Dynamically auto-detects the entire F&O list today
         fno_universe = extract_active_fno_universe(fo_bhavcopy)
     else:
         print("NSE Options Data Blocked or Unavailable. Activating Fallback F&O Universe.")
-        fno_universe = FALLBACK_FNO_UNIVERSE
+        fno_universe = [ticker for ticker in FALLBACK_FNO_UNIVERSE if ticker != 'VEDL']
         
     print("--- Fetching Yahoo Finance History ---")
     raw_data = fetch_universe_stateless(fno_universe)
