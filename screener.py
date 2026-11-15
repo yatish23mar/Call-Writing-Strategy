@@ -59,7 +59,6 @@ def fetch_today_fno_bhavcopy():
                 "FinInstrmTp": "INSTRUMENT", "TckrSymb": "SYMBOL", "XpryDt": "EXPIRY_DT",
                 "StrkPric": "STRIKE_PR", "OptnTp": "OPTION_TYP", "ClsPric": "CLOSE", "OpnIntrst": "OPEN_INT"
             }
-            # FIXED: Explicit reassignment to avoid Pandas 4 inplace deprecation
             if "TckrSymb" in bhavcopy.columns:
                 bhavcopy = bhavcopy.rename(columns=udiff_map)
             
@@ -80,7 +79,6 @@ def fetch_today_fno_bhavcopy():
     return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
-    # FIXED: Extracts uniquely directly from SYMBOL rather than relying on unreliable INSTRUMENT strings
     active_symbols = fo_bhavcopy_df['SYMBOL'].dropna().unique().tolist()
     
     indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
@@ -102,9 +100,9 @@ def fetch_universe_stateless(tickers):
     data = yf.download(yf_tickers, period="2y", interval="1d", group_by='ticker', threads=True)
     
     all_data = []
-    for orig_ticker, yf_ticker in zip(tickers, yf_tickers):
-        if yf_ticker in data:
-            df = data[yf_ticker].copy()
+    for orig_ticker, yf_tickers in zip(tickers, yf_tickers):
+        if yf_tickers in data:
+            df = data[yf_tickers].copy()
             if df.empty:
                 continue
             df = df.dropna(subset=['Close']).reset_index()
@@ -171,7 +169,8 @@ def execute_screener(df, earnings_calendar):
     return today
 
 def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
-    calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['INSTRUMENT'].isin(['OPTSTK', 'OPT'])) & (fo_df['OPTION_TYP'] == 'CE')].copy()
+    # FIXED: Replaced brittle 'INSTRUMENT' check with universally reliable 'OPTION_TYP' filter
+    calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['OPTION_TYP'] == 'CE')].copy()
     if calls.empty: return None
     
     calls['DTE'] = (calls['EXPIRY_DT'] - datetime.now()).dt.days
