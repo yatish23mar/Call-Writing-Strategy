@@ -4,15 +4,13 @@ import numpy as np
 import pandas as pd
 import pandas_ta_classic as ta
 import yfinance as yf
-from datetime import datetime, timedelta
-from curl_cffi import requests
-import zipfile
-import io
+from datetime import date, datetime, timedelta
 import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+from jugaad_data.nse import bhavcopy_fo_save
 from vollib.black_scholes.greeks.analytical import delta
 from vollib.black_scholes.implied_volatility import implied_volatility
 
@@ -45,41 +43,46 @@ FALLBACK_FNO_UNIVERSE = [
 ]
 
 # ==========================================
-# 2. NSE DATA EXTRACTION (curl-cffi Impersonation)
+# 2. NSE DATA EXTRACTION (jugaad-data)
 # ==========================================
 def fetch_today_fno_bhavcopy():
-    target_date = datetime.now()
+    check_date = date.today()
     
-    if target_date.weekday() == 5:
-        target_date -= timedelta(days=1)
-    elif target_date.weekday() == 6:
-        target_date -= timedelta(days=2)
-        
-    month_str = target_date.strftime('%b').upper()
-    year_str = target_date.strftime('%Y')
-    date_str = target_date.strftime('%d%b%Y').upper()
-    
-    url = f"https://nsearchives.nseindia.com/content/historical/DERIVATIVES/{year_str}/{month_str}/fo{date_str}bhav.csv.zip"
-    
-    try:
-        session = requests.Session(impersonate="chrome")
-        session.get("https://www.nseindia.com", timeout=15)
-        response = session.get(url, timeout=15)
-        
-        if response.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                csv_filename = z.namelist()[0]
-                with z.open(csv_filename) as f:
-                    fo_df = pd.read_csv(f)
-            fo_df.columns = fo_df.columns.str.strip()
-            return fo_df
-        return None
-    except Exception as e:
-        print(f"Bhavcopy Download Error: {e}")
-        return None
+    # 5-day lookback loop to elegantly handle weekends and NSE holidays
+    for _ in range(5):
+        try:
+            print(f"Checking F&O Bhavcopy for {check_date}...")
+            file_path = bhavcopy_fo_save(check_date, "/tmp")
+            bhavcopy = pd.read_csv(file_path)
+            bhavcopy.columns = bhavcopy.columns.str.strip()
+            
+            # Map new UDiFF architecture back to Legacy column headers
+            udiff_map = {
+                "FinInstrmTp": "INSTRUMENT", "TckrSymb": "SYMBOL", "XpryDt": "EXPIRY_DT",
+                "StrkPric": "STRIKE_PR", "OptnTp": "OPTION_TYP", "ClsPric": "CLOSE", "OpnIntrst": "OPEN_INT"
+            }
+            if "TckrSymb" in bhavcopy.columns:
+                bhavcopy.rename(columns=udiff_map, inplace=True)
+            
+            for col in ["INSTRUMENT", "SYMBOL", "OPTION_TYP"]:
+                if col in bhavcopy.columns:
+                    bhavcopy[col] = bhavcopy[col].astype(str).str.strip()
+            
+            # Typecasting to ensure Black-Scholes module doesn't crash on string math
+            bhavcopy["EXPIRY_DT"] = pd.to_datetime(bhavcopy["EXPIRY_DT"], errors='coerce')
+            bhavcopy["STRIKE_PR"] = pd.to_numeric(bhavcopy["STRIKE_PR"], errors='coerce')
+            bhavcopy["CLOSE"] = pd.to_numeric(bhavcopy["CLOSE"], errors='coerce')
+            
+            return bhavcopy
+        except Exception as e:
+            print(f"Bhavcopy parse failed for {check_date}: {e}")
+            check_date -= timedelta(days=1)
+            
+    print("Could not retrieve a valid F&O Bhavcopy within the last 5 days.")
+    return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
-    fut_stk = fo_bhavcopy_df[fo_bhavcopy_df['INSTRUMENT'] == 'FUTSTK']
+    fut_stk = fo_bhavcopy_df[fo_bhavcopy_df['INSTRUMENT'].isin(['FUTSTK', 'FUT'])]
     active_symbols = fut_stk['SYMBOL'].unique().tolist()
     
     if 'VEDL' in active_symbols:
@@ -89,7 +92,7 @@ def extract_active_fno_universe(fo_bhavcopy_df):
     return active_symbols
 
 # ==========================================
-# 3. STATELESS SPOT DATA (Yahoo Finance - 2 Year Fix)
+# 3. STATELESS SPOT DATA (Yahoo Finance)
 # ==========================================
 def fetch_universe_stateless(tickers):
     print(f"Fetching 2-year history for {len(tickers)} F&O stocks...")
@@ -167,13 +170,14 @@ def execute_screener(df, earnings_calendar):
     return today
 
 def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
-    calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['INSTRUMENT'] == 'OPTSTK') & (fo_df['OPTION_TYP'] == 'CE')].copy()
+    calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['INSTRUMENT'].isin(['OPTSTK', 'OPT'])) & (fo_df['OPTION_TYP'] == 'CE')].copy()
     if calls.empty: return None
     
-    calls['EXPIRY_DT'] = pd.to_datetime(calls['EXPIRY_DT'])
     calls['DTE'] = (calls['EXPIRY_DT'] - datetime.now()).dt.days
     valid_expiries = calls[(calls['DTE'] >= 15) & (calls['DTE'] <= 45)]
     if valid_expiries.empty: valid_expiries = calls[calls['DTE'] > 1] 
+    
+    if valid_expiries.empty: return None
     
     target_expiry = valid_expiries['EXPIRY_DT'].min()
     chain = valid_expiries[valid_expiries['EXPIRY_DT'] == target_expiry].copy()
@@ -210,7 +214,7 @@ def send_email_alert(html_table):
     recipient = os.environ.get("RECIPIENT_EMAIL")
     
     msg = MIMEMultipart()
-    msg['Subject'] = f"QUANTITATIVE EOD MATRIX: Naked Short Universe - {datetime.now().strftime('%d-%b-%Y')}"
+    msg['Subject'] = f"QUANTITATIVE EOD MATRIX: Naked Short Universe - {date.today().strftime('%d-%b-%Y')}"
     msg['From'] = sender
     msg['To'] = recipient
     
@@ -254,9 +258,12 @@ def send_email_alert(html_table):
     
     msg.attach(MIMEText(body, 'html'))
     
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-        server.login(sender, password)
-        server.sendmail(sender, recipient, msg.as_string())
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, recipient, msg.as_string())
+    except Exception as e:
+        print(f"CRITICAL: Email delivery failed: {e}")
 
 # ==========================================
 # MAIN EXECUTION
