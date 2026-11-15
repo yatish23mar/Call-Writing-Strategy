@@ -90,10 +90,8 @@ def fetch_today_fno_bhavcopy():
     return None
 
 def extract_active_fno_universe(fo_bhavcopy_df):
-    # Dynamically extracts all unique tickers from the live file, capturing daily additions/deletions
     active_symbols = fo_bhavcopy_df['SYMBOL'].dropna().unique().tolist()
     
-    # Filter out indices mathematically
     indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
     active_symbols = [s for s in active_symbols if str(s).upper() not in indices and isinstance(s, str)]
     
@@ -235,33 +233,22 @@ def send_email_alert(html_table):
     <head>
     <style>
       table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; }}
-      th, td {{ border: 1px solid #ddd; padding: 6px; text-align: right; }}
+      th, td {{ border: 1px solid #ddd; padding: 4px; text-align: right; }}
       th {{ background-color: #0b1c3c; color: white; text-align: center; }}
-      td:first-child {{ text-align: left; font-weight: bold; }}
+      .t-l {{ text-align: left; font-weight: bold; }}
+      .b {{ font-weight: bold; }}
+      .r {{ color: red; font-weight: bold; }}
+      .g {{ color: #28a745; font-weight: bold; }}
       .qualified {{ background-color: #d4edda; }}
       .failed {{ background-color: #ffffff; color: #555; }}
     </style>
     </head>
     <body>
-    <h2 style="color:#0b1c3c;">Systematic F&O Exhaustion Matrix</h2>
-    <p>Displays all mathematically processed F&O constituents. Sorted by Signal Status, then HVP. <br>
+    <h2 style="color:#0b1c3c; margin-bottom:5px;">Systematic F&O Exhaustion Matrix</h2>
+    <p style="margin-top:0;">Displays all mathematically processed F&O constituents. Sorted by Signal Status, then HVP.<br>
     <b>Rule:</b> Only execute 'QUALIFIED' tickers. Abort if 9:08 AM pre-market breaches Spot Close.</p>
-    
     <table>
-      <tr>
-        <th>Ticker</th>
-        <th>Spot Close</th>
-        <th>RSI (14)</th>
-        <th>MACD Hist</th>
-        <th>ADX</th>
-        <th>Wick %</th>
-        <th>HVP (252)</th>
-        <th>Liq (Cr)</th>
-        <th>Target (15D)</th>
-        <th>Premium</th>
-        <th>Hard Stop</th>
-        <th>Signal Status</th>
-      </tr>
+      <tr><th>Ticker</th><th>Spot Close</th><th>RSI (14)</th><th>MACD Hist</th><th>ADX</th><th>Wick %</th><th>HVP (252)</th><th>Liq (Cr)</th><th>Target (15D)</th><th>Premium</th><th>Hard Stop</th><th>Signal Status</th></tr>
       {html_table}
     </table>
     </body>
@@ -285,7 +272,6 @@ if __name__ == "__main__":
     fo_bhavcopy = fetch_today_fno_bhavcopy()
     
     if fo_bhavcopy is not None:
-        # Dynamically auto-detects the entire F&O list today
         fno_universe = extract_active_fno_universe(fo_bhavcopy)
     else:
         print("NSE Options Data Blocked or Unavailable. Activating Fallback F&O Universe.")
@@ -322,24 +308,9 @@ if __name__ == "__main__":
             strike_str = "Manual Pull Required"
             
         row_class = "qualified" if row['Status'] == 'QUALIFIED' else "failed"
-        status_color = "green" if row['Status'] == 'QUALIFIED' else "red"
+        status_class = "g" if row['Status'] == 'QUALIFIED' else "r"
         
-        html_rows += f"""
-        <tr class="{row_class}">
-            <td>{row['ticker']}</td>
-            <td>₹{row['close']:.2f}</td>
-            <td>{row['RSI']:.1f}</td>
-            <td>{row['MACD_Hist']:.2f}</td>
-            <td>{row['ADX']:.1f}</td>
-            <td>{row['Upper_Wick_Ratio']:.2f}</td>
-            <td>{row['HVP']:.1f}</td>
-            <td>₹{row['Turnover_Cr']:.1f}</td>
-            <td style="font-weight:bold;">{strike_str}</td>
-            <td>{prem_str}</td>
-            <td style="color:red; font-weight:bold;">{stop_str}</td>
-            <td style="color:{status_color}; font-weight:bold;">{row['Status']}</td>
-        </tr>
-        """
+        html_rows += f'<tr class="{row_class}"><td class="t-l">{row["ticker"]}</td><td>₹{row["close"]:.2f}</td><td>{row["RSI"]:.1f}</td><td>{row["MACD_Hist"]:.2f}</td><td>{row["ADX"]:.1f}</td><td>{row["Upper_Wick_Ratio"]:.2f}</td><td>{row["HVP"]:.1f}</td><td>₹{row["Turnover_Cr"]:.1f}</td><td class="b">{strike_str}</td><td>{prem_str}</td><td class="r">{stop_str}</td><td class="{status_class}">{row["Status"]}</td></tr>'
         
     print("--- Dispatching Executive Report ---")
     send_email_alert(html_rows)
