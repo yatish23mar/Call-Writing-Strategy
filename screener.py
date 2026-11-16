@@ -92,7 +92,7 @@ def fetch_today_fno_bhavcopy():
 def extract_active_fno_universe(fo_bhavcopy_df):
     active_symbols = fo_bhavcopy_df['SYMBOL'].dropna().unique().tolist()
     
-    indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']
+    indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX', 'NIFTYNXT50', 'NIFTYFPI']
     active_symbols = [s for s in active_symbols if str(s).upper() not in indices and isinstance(s, str)]
     
     if 'VEDL' in active_symbols:
@@ -202,7 +202,7 @@ def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
     calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['OPTION_TYP'] == 'CE')].copy()
     if calls.empty: return None
     
-    calls['DTE'] = (calls['EXPIRY_DT'] - datetime.now().date()).apply(lambda x: x.days)
+    calls['DTE'] = (calls['EXPIRY_DT'] - pd.Timestamp.now().normalize()).dt.days
     valid_expiries = calls[(calls['DTE'] >= 15) & (calls['DTE'] <= 45)]
     if valid_expiries.empty: valid_expiries = calls[calls['DTE'] > 1] 
     
