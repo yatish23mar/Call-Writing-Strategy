@@ -141,6 +141,11 @@ def compute_stateless_indicators(group):
     macd = ta.macd(group['close'], fast=12, slow=26, signal=9)
     if macd is not None:
         group['MACD_Hist'] = macd['MACDh_12_26_9']
+        # Isolated shift to prevent MACD cross-pollution between different stocks
+        group['MACD_Hist_Prev'] = group['MACD_Hist'].shift(1) 
+    else:
+        group['MACD_Hist'] = np.nan
+        group['MACD_Hist_Prev'] = np.nan
     
     group['returns'] = group['close'].pct_change()
     group['HV_20'] = group['returns'].rolling(window=20).std() * math.sqrt(252) * 100
@@ -151,7 +156,8 @@ def compute_stateless_indicators(group):
     adx_df = ta.adx(group['high'], group['low'], group['close'], length=14)
     if adx_df is not None:
         group['ADX'] = adx_df['ADX_14']
-        group['ADX_Slope'] = group['ADX'].diff()
+    else:
+        group['ADX'] = np.nan
         
     daily_range = np.where((group['high'] - group['low']) == 0, 0.001, group['high'] - group['low'])
     upper_wick = group['high'] - group[['open', 'close']].max(axis=1)
@@ -163,12 +169,12 @@ def compute_stateless_indicators(group):
     return group
 
 def execute_screener(df, earnings_calendar):
+    # Updated logical sequence preventing the closing band / wick paradox
     df['Signal'] = (
-        (df['RSI'] >= 80) & 
-        (df['close'] > df['BB_Upper_2.5']) & 
-        (df['MACD_Hist'] < 0) & 
-        (df['ADX'] > 35) & 
-        (df['ADX_Slope'] < 0) & 
+        (df['RSI'] >= 75) & 
+        (df['high'] > df['BB_Upper_2.5']) & 
+        (df['MACD_Hist'] < df['MACD_Hist_Prev']) & 
+        (df['ADX'] > 30) & 
         (df['Upper_Wick_Ratio'] >= 0.50) & 
         (df['HVP'] >= 80) & 
         (df['Turnover_Cr'] > 200)
