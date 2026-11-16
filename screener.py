@@ -134,9 +134,13 @@ def fetch_universe_stateless(tickers):
 # ==========================================
 def compute_stateless_indicators(group):
     group['RSI'] = ta.rsi(group['close'], length=14)
-    bbands = ta.bbands(group['close'], length=20, std=2.5)
+    
+    # Recalibrated to 2.0 Standard Deviations for realistic backtesting
+    bbands = ta.bbands(group['close'], length=20, std=2.0)
     if bbands is not None:
-        group['BB_Upper_2.5'] = bbands['BBU_20_2.5']
+        group['BB_Upper_2.0'] = bbands['BBU_20_2.0']
+    else:
+        group['BB_Upper_2.0'] = np.nan
     
     macd = ta.macd(group['close'], fast=12, slow=26, signal=9)
     if macd is not None:
@@ -169,14 +173,14 @@ def compute_stateless_indicators(group):
     return group
 
 def execute_screener(df, earnings_calendar):
-    # Updated logical sequence preventing the closing band / wick paradox
+    # Recalibrated logical sequence for statistically significant backtesting
     df['Signal'] = (
-        (df['RSI'] >= 75) & 
-        (df['high'] > df['BB_Upper_2.5']) & 
+        (df['RSI'] >= 70) & 
+        (df['high'] > df['BB_Upper_2.0']) & 
         (df['MACD_Hist'] < df['MACD_Hist_Prev']) & 
-        (df['ADX'] > 30) & 
-        (df['Upper_Wick_Ratio'] >= 0.50) & 
-        (df['HVP'] >= 80) & 
+        (df['ADX'] > 25) & 
+        (df['Upper_Wick_Ratio'] >= 0.40) & 
+        (df['HVP'] >= 70) & 
         (df['Turnover_Cr'] > 200)
     )
     
