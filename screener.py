@@ -181,7 +181,7 @@ def execute_screener(df, earnings_calendar):
         (df['ADX'] > 25) & 
         (df['Upper_Wick_Ratio'] >= 0.40) & 
         (df['HVP'] >= 70) & 
-        (df['Turnover_Cr'] > 200)
+        (df['Turnover_Cr'] > 75)  # Liquidity filter lowered to Rs. 75 Cr to unlock mid-cap F&O
     )
     
     hist_df = df[(df['date'] >= pd.Timestamp('2021-01-01')) & (df['Signal'] == True)].copy()
