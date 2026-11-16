@@ -105,10 +105,10 @@ def extract_active_fno_universe(fo_bhavcopy_df):
 # 3. STATELESS SPOT DATA (Yahoo Finance)
 # ==========================================
 def fetch_universe_stateless(tickers):
-    print(f"Fetching 2-year history for {len(tickers)} F&O stocks...")
+    print(f"Fetching full history since Jan 2020 for {len(tickers)} F&O stocks...")
     yf_tickers = [f"{t}.NS" for t in tickers]
     
-    data = yf.download(yf_tickers, period="2y", interval="1d", group_by='ticker', threads=True)
+    data = yf.download(yf_tickers, start="2020-01-01", interval="1d", group_by='ticker', threads=True)
     
     all_data = []
     for orig_ticker, yf_ticker in zip(tickers, yf_tickers):
@@ -126,10 +126,11 @@ def fetch_universe_stateless(tickers):
             
     master_df = pd.concat(all_data, ignore_index=True)
     master_df.columns = master_df.columns.str.lower()
+    master_df['date'] = pd.to_datetime(master_df['date']).dt.tz_localize(None)
     return master_df
 
 # ==========================================
-# 4. QUANTITATIVE ENGINE
+# 4. QUANTITATIVE & BACKTESTING ENGINE
 # ==========================================
 def compute_stateless_indicators(group):
     group['RSI'] = ta.rsi(group['close'], length=14)
@@ -156,26 +157,44 @@ def compute_stateless_indicators(group):
     upper_wick = group['high'] - group[['open', 'close']].max(axis=1)
     group['Upper_Wick_Ratio'] = upper_wick / daily_range
     group['Turnover_Cr'] = (group['close'] * group['volume']).rolling(20).mean() / 10000000
+    
+    group['Fwd_1M_Ret'] = (group['close'].shift(-21) - group['close']) / group['close']
+    
     return group
 
 def execute_screener(df, earnings_calendar):
-    latest_date = df['date'].max()
-    today = df[df['date'] == latest_date].copy().fillna(0)
+    df['Signal'] = (
+        (df['RSI'] >= 80) & 
+        (df['close'] > df['BB_Upper_2.5']) & 
+        (df['MACD_Hist'] < 0) & 
+        (df['ADX'] > 35) & 
+        (df['ADX_Slope'] < 0) & 
+        (df['Upper_Wick_Ratio'] >= 0.50) & 
+        (df['HVP'] >= 80) & 
+        (df['Turnover_Cr'] > 200)
+    )
     
-    c_stretch = (today['RSI'] >= 80) & (today['close'] > today['BB_Upper_2.5'])
-    c_momentum = today['MACD_Hist'] < 0
-    c_regime = (today['ADX'] > 35) & (today['ADX_Slope'] < 0)
-    c_rejection = today['Upper_Wick_Ratio'] >= 0.50
-    c_premium = today['HVP'] >= 80
-    c_liquidity = today['Turnover_Cr'] > 200
+    hist_df = df[(df['date'] >= pd.Timestamp('2021-01-01')) & (df['Signal'] == True)].copy()
+    
+    backtest_stats = hist_df.groupby('ticker').agg(
+        Signals=('Fwd_1M_Ret', 'size'),
+        Avg_1M_Ret=('Fwd_1M_Ret', 'mean'),
+        Med_1M_Ret=('Fwd_1M_Ret', 'median'),
+        Win_Rate=('Fwd_1M_Ret', lambda x: (x <= 0.0).mean() * 100)
+    ).reset_index()
+    
+    latest_date = df['date'].max()
+    today = df[df['date'] == latest_date].copy()
+    
+    today = pd.merge(today, backtest_stats, on='ticker', how='left')
+    today['Signals'] = today['Signals'].fillna(0).astype(int)
+    today = today.fillna(0)
     
     ten_days_out = datetime.now() + timedelta(days=10)
     allowed_tickers = [t for t in today['ticker'] if earnings_calendar.get(t, datetime.max) > ten_days_out]
     c_no_earnings = today['ticker'].isin(allowed_tickers)
     
-    qualifies = c_stretch & c_momentum & c_regime & c_rejection & c_premium & c_liquidity & c_no_earnings
-    today['Status'] = np.where(qualifies, 'QUALIFIED', 'FAILED')
-    
+    today['Status'] = np.where(today['Signal'] & c_no_earnings, 'QUALIFIED', 'FAILED')
     today = today.sort_values(by=['Status', 'HVP'], ascending=[False, False])
     return today
 
@@ -183,7 +202,7 @@ def get_15_delta_from_bhavcopy(fo_df, ticker, spot_price):
     calls = fo_df[(fo_df['SYMBOL'] == ticker) & (fo_df['OPTION_TYP'] == 'CE')].copy()
     if calls.empty: return None
     
-    calls['DTE'] = (calls['EXPIRY_DT'] - datetime.now()).dt.days
+    calls['DTE'] = (calls['EXPIRY_DT'] - datetime.now().date()).apply(lambda x: x.days)
     valid_expiries = calls[(calls['DTE'] >= 15) & (calls['DTE'] <= 45)]
     if valid_expiries.empty: valid_expiries = calls[calls['DTE'] > 1] 
     
@@ -232,7 +251,7 @@ def send_email_alert(html_table):
     <html>
     <head>
     <style>
-      table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; }}
+      table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 11px; }}
       th, td {{ border: 1px solid #ddd; padding: 4px; text-align: right; }}
       th {{ background-color: #0b1c3c; color: white; text-align: center; }}
       .t-l {{ text-align: left; font-weight: bold; }}
@@ -245,10 +264,10 @@ def send_email_alert(html_table):
     </head>
     <body>
     <h2 style="color:#0b1c3c; margin-bottom:5px;">Systematic F&O Exhaustion Matrix</h2>
-    <p style="margin-top:0;">Displays all mathematically processed F&O constituents. Sorted by Signal Status, then HVP.<br>
-    <b>Rule:</b> Only execute 'QUALIFIED' tickers. Abort if 9:08 AM pre-market breaches Spot Close.</p>
+    <p style="margin-top:0;"><b>Rule:</b> Only execute 'QUALIFIED' tickers. Abort if 9:08 AM pre-market breaches Spot Close.<br>
+    <i>Backtest reflects performance of 1-Month hold periods since Jan 2021.</i></p>
     <table>
-      <tr><th>Ticker</th><th>Spot Close</th><th>RSI (14)</th><th>MACD Hist</th><th>ADX</th><th>Wick %</th><th>HVP (252)</th><th>Liq (Cr)</th><th>Target (15D)</th><th>Premium</th><th>Hard Stop</th><th>Signal Status</th></tr>
+      <tr><th>Ticker</th><th>Spot</th><th>RSI (14)</th><th>MACD Hist</th><th>ADX</th><th>Wick %</th><th>HVP (252)</th><th>Liq (Cr)</th><th>Signals</th><th>Avg 1M Ret</th><th>Med 1M Ret</th><th>Win Rate</th><th>Target (15D)</th><th>Premium</th><th>Hard Stop</th><th>Status</th></tr>
       {html_table}
     </table>
     </body>
@@ -280,7 +299,7 @@ if __name__ == "__main__":
     print("--- Fetching Yahoo Finance History ---")
     raw_data = fetch_universe_stateless(fno_universe)
     
-    print("--- Running Screener ---")
+    print("--- Running Screener & Backtester ---")
     processed_list = []
     for ticker_name, group_df in raw_data.groupby('ticker'):
         processed_list.append(compute_stateless_indicators(group_df.copy()))
@@ -310,7 +329,12 @@ if __name__ == "__main__":
         row_class = "qualified" if row['Status'] == 'QUALIFIED' else "failed"
         status_class = "g" if row['Status'] == 'QUALIFIED' else "r"
         
-        html_rows += f'<tr class="{row_class}"><td class="t-l">{row["ticker"]}</td><td>₹{row["close"]:.2f}</td><td>{row["RSI"]:.1f}</td><td>{row["MACD_Hist"]:.2f}</td><td>{row["ADX"]:.1f}</td><td>{row["Upper_Wick_Ratio"]:.2f}</td><td>{row["HVP"]:.1f}</td><td>₹{row["Turnover_Cr"]:.1f}</td><td class="b">{strike_str}</td><td>{prem_str}</td><td class="r">{stop_str}</td><td class="{status_class}">{row["Status"]}</td></tr>'
+        signals_count = row['Signals']
+        avg_ret_str = f"{row['Avg_1M_Ret']*100:.1f}%" if signals_count > 0 else "N/A"
+        med_ret_str = f"{row['Med_1M_Ret']*100:.1f}%" if signals_count > 0 else "N/A"
+        win_rate_str = f"{row['Win_Rate']:.1f}%" if signals_count > 0 else "N/A"
+        
+        html_rows += f'<tr class="{row_class}"><td class="t-l">{row["ticker"]}</td><td>₹{row["close"]:.2f}</td><td>{row["RSI"]:.1f}</td><td>{row["MACD_Hist"]:.2f}</td><td>{row["ADX"]:.1f}</td><td>{row["Upper_Wick_Ratio"]:.2f}</td><td>{row["HVP"]:.1f}</td><td>₹{row["Turnover_Cr"]:.1f}</td><td class="b">{signals_count}</td><td>{avg_ret_str}</td><td>{med_ret_str}</td><td class="b">{win_rate_str}</td><td class="b">{strike_str}</td><td>{prem_str}</td><td class="r">{stop_str}</td><td class="{status_class}">{row["Status"]}</td></tr>'
         
     print("--- Dispatching Executive Report ---")
     send_email_alert(html_rows)
